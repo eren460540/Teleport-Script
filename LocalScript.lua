@@ -47,6 +47,7 @@ local DEFAULT_CONFIG = {
 	espEnabled = false,
 	menuPosition = { scaleX = 0, offsetX = 120, scaleY = 0, offsetY = 120 },
 	openButtonPosition = { scaleX = 0, offsetX = 20, scaleY = 0, offsetY = 20 },
+	tpShortcutPosition = { scaleX = 0, offsetX = 170, scaleY = 0, offsetY = 20 },
 	settingsOpen = false,
 	colors = {
 		espColor = DEFAULT_COLORS.espMarkerColor,
@@ -74,6 +75,12 @@ local state = {
 		DEFAULT_CONFIG.openButtonPosition.offsetX,
 		DEFAULT_CONFIG.openButtonPosition.scaleY,
 		DEFAULT_CONFIG.openButtonPosition.offsetY
+	),
+	tpShortcutPosition = UDim2.new(
+		DEFAULT_CONFIG.tpShortcutPosition.scaleX,
+		DEFAULT_CONFIG.tpShortcutPosition.offsetX,
+		DEFAULT_CONFIG.tpShortcutPosition.scaleY,
+		DEFAULT_CONFIG.tpShortcutPosition.offsetY
 	),
 }
 
@@ -225,6 +232,7 @@ local function applyLoadedConfig(config)
 	state.espEnabled = config.espEnabled == true
 	state.menuPosition = tableToUDim2(config.menuPosition, state.menuPosition)
 	state.openButtonPosition = tableToUDim2(config.openButtonPosition, state.openButtonPosition)
+	state.tpShortcutPosition = tableToUDim2(config.tpShortcutPosition, state.tpShortcutPosition)
 	state.settingsOpen = config.settingsOpen == true
 
 	local colors = cloneDefaultColors()
@@ -247,6 +255,7 @@ local function buildConfigTable()
 		espEnabled = state.espEnabled,
 		menuPosition = udim2ToTable(ui.mainFrame and ui.mainFrame.Position or state.menuPosition),
 		openButtonPosition = udim2ToTable(ui.openButton and ui.openButton.Position or state.openButtonPosition),
+		tpShortcutPosition = udim2ToTable(ui.tpShortcutButton and ui.tpShortcutButton.Position or state.tpShortcutPosition),
 		settingsOpen = state.settingsOpen,
 		colors = {
 			espColor = color3ToTable(state.colors.espMarkerColor),
@@ -353,6 +362,10 @@ local function reclampVisibleUi()
 		ui.openButton.Position = clampGuiPosition(ui.openButton, ui.openButton.Position)
 		state.openButtonPosition = ui.openButton.Position
 	end
+	if ui.tpShortcutButton then
+		ui.tpShortcutButton.Position = clampGuiPosition(ui.tpShortcutButton, ui.tpShortcutButton.Position)
+		state.tpShortcutPosition = ui.tpShortcutButton.Position
+	end
 end
 
 local function bindViewportClamp()
@@ -458,6 +471,34 @@ local function getSavedBasePosition()
 	return state.savedBasePosition or estimateBasePositionFromCFrame(state.savedPosition)
 end
 
+local shortcutFeedbackToken = 0
+
+local function setShortcutButtonIdleVisual()
+	if not ui.tpShortcutButton then
+		return
+	end
+
+	ui.tpShortcutButton.BackgroundColor3 = Color3.fromRGB(215, 60, 60)
+	ui.tpShortcutButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+end
+
+local function flashShortcutButtonSuccess()
+	if not ui.tpShortcutButton then
+		return
+	end
+
+	shortcutFeedbackToken += 1
+	local currentToken = shortcutFeedbackToken
+	ui.tpShortcutButton.BackgroundColor3 = Color3.fromRGB(80, 200, 100)
+	ui.tpShortcutButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+
+	task.delay(0.5, function()
+		if shortcutFeedbackToken == currentToken then
+			setShortcutButtonIdleVisual()
+		end
+	end)
+end
+
 local function computeFootBasePosition(humanoidRootPart, humanoid)
 	local verticalOffset = humanoidRootPart.Size.Y * 0.5 + math.max(humanoid.HipHeight, 0)
 	local estimatedBase = humanoidRootPart.Position - Vector3.new(0, verticalOffset, 0)
@@ -477,6 +518,26 @@ local function computeFootBasePosition(humanoidRootPart, humanoid)
 	end
 
 	return estimatedBase
+end
+
+local function teleportToSavedPosition()
+	if not state.savedPosition then
+		local message = "No position saved"
+		setStatus(message)
+		return false, message
+	end
+
+	local humanoidRootPart = getHumanoidRootPart(1)
+	if not humanoidRootPart then
+		local message = "Character not ready"
+		setStatus(message)
+		return false, message
+	end
+
+	humanoidRootPart.CFrame = state.savedPosition
+	local message = "Teleported to saved position"
+	setStatus(message)
+	return true, message
 end
 
 --==================================================
@@ -846,6 +907,7 @@ local function applyTheme()
 	ui.settingsDivider.BackgroundColor3 = state.colors.titleBackground
 	ui.openButton.BackgroundColor3 = state.colors.openButtonBackground
 	ui.openButton.TextColor3 = state.colors.textColor
+	setShortcutButtonIdleVisual()
 	ui.closeButton.BackgroundColor3 = state.colors.closeButtonBackground
 	ui.closeButton.TextColor3 = getReadableTextColor(state.colors.closeButtonBackground)
 
@@ -1111,12 +1173,12 @@ local function buildInterface()
 	ui.setPositionButton = createButton("SetPositionButton", ui.mainFrame, UDim2.new(1, -20, 0, 40), UDim2.new(0, 10, 0, 95), "Set Position", state.colors.buttonBackground, state.colors.textColor)
 	registerDynamicButton(ui.setPositionButton, "primary")
 
-	ui.teleportButton = createButton("TeleportButton", ui.mainFrame, UDim2.new(0.72, -15, 0, 40), UDim2.new(0, 10, 0, 141), "TP to Position", state.colors.secondaryButtonBackground, state.colors.textColor)
+	ui.teleportButton = createButton("TeleportButton", ui.mainFrame, UDim2.new(1, -20, 0, 40), UDim2.new(0, 10, 0, 141), "TP to Position", state.colors.secondaryButtonBackground, state.colors.textColor)
 	registerDynamicButton(ui.teleportButton, "secondary")
 
-	ui.quickTeleportButton = createButton("QuickTeleportButton", ui.mainFrame, UDim2.new(0.28, -5, 0, 40), UDim2.new(0.72, 5, 0, 141), "TP", state.colors.secondaryButtonBackground, state.colors.textColor)
-	ui.quickTeleportButton.TextSize = 18
-	registerDynamicButton(ui.quickTeleportButton, "secondary")
+	ui.tpShortcutButton = createButton("TPShortcutButton", ui.screenGui, UDim2.new(0, 68, 0, 44), state.tpShortcutPosition, "TP", Color3.fromRGB(215, 60, 60), Color3.fromRGB(0, 0, 0))
+	ui.tpShortcutButton.TextSize = 18
+	ui.tpShortcutButton.Active = true
 
 	ui.espButton = createButton("ESPButton", ui.mainFrame, UDim2.new(0.5, -15, 0, 40), UDim2.new(0, 10, 0, 187), "ESP: OFF", Color3.fromRGB(210, 75, 75), Color3.fromRGB(0, 0, 0))
 	registerDynamicButton(ui.espButton, "esp")
@@ -1169,8 +1231,10 @@ local function buildInterface()
 	setSettingsOpen(state.settingsOpen)
 	ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, state.menuPosition)
 	ui.openButton.Position = clampGuiPosition(ui.openButton, state.openButtonPosition)
+	ui.tpShortcutButton.Position = clampGuiPosition(ui.tpShortcutButton, state.tpShortcutPosition)
 	state.menuPosition = ui.mainFrame.Position
 	state.openButtonPosition = ui.openButton.Position
+	state.tpShortcutPosition = ui.tpShortcutButton.Position
 	bindViewportClamp()
 end
 
@@ -1186,6 +1250,9 @@ local function connectEvents()
 	end)
 	makeDraggable(ui.openButton, ui.openButton, function(newPosition)
 		state.openButtonPosition = newPosition
+	end)
+	makeDraggable(ui.tpShortcutButton, ui.tpShortcutButton, function(newPosition)
+		state.tpShortcutPosition = newPosition
 	end)
 
 	ui.setPositionButton.MouseButton1Click:Connect(function()
@@ -1204,24 +1271,15 @@ local function connectEvents()
 		end
 	end)
 
-	local function teleportToSavedPosition()
-		if not state.savedPosition then
-			setStatus("No position saved")
-			return
-		end
-
-		local humanoidRootPart = getHumanoidRootPart(1)
-		if not humanoidRootPart then
-			setStatus("Character not ready")
-			return
-		end
-
-		humanoidRootPart.CFrame = state.savedPosition
-		setStatus("Teleported to saved position")
-	end
-
 	ui.teleportButton.MouseButton1Click:Connect(teleportToSavedPosition)
-	ui.quickTeleportButton.MouseButton1Click:Connect(teleportToSavedPosition)
+	ui.tpShortcutButton.MouseButton1Click:Connect(function()
+		local success = teleportToSavedPosition()
+		if success then
+			flashShortcutButtonSuccess()
+		else
+			setShortcutButtonIdleVisual()
+		end
+	end)
 
 	ui.espButton.MouseButton1Click:Connect(function()
 		state.espEnabled = not state.espEnabled
@@ -1237,6 +1295,7 @@ local function connectEvents()
 	ui.saveConfigButton.MouseButton1Click:Connect(function()
 		state.menuPosition = ui.mainFrame.Position
 		state.openButtonPosition = ui.openButton.Position
+		state.tpShortcutPosition = ui.tpShortcutButton.Position
 		local success, message = saveConfig()
 		setStatus(message)
 		if not success then
