@@ -4,7 +4,7 @@
 	- Draggable open button and main menu with screen clamping
 	- Save / teleport to a local position
 	- Client-side ESP marker + line for the saved location
-	- Expandable settings panel with live color pickers
+	- Expandable settings panel with ESP color picker
 	- Per-place config save/load helpers with graceful fallback
 ]]
 
@@ -48,7 +48,9 @@ local DEFAULT_CONFIG = {
 	menuPosition = { scaleX = 0, offsetX = 120, scaleY = 0, offsetY = 120 },
 	openButtonPosition = { scaleX = 0, offsetX = 20, scaleY = 0, offsetY = 20 },
 	settingsOpen = false,
-	colors = DEFAULT_COLORS,
+	colors = {
+		espColor = DEFAULT_COLORS.espMarkerColor,
+	},
 }
 
 local DEFAULT_BASE_OFFSET = 3.5
@@ -227,19 +229,18 @@ local function applyLoadedConfig(config)
 
 	local colors = cloneDefaultColors()
 	if type(config.colors) == "table" then
-		for colorName, defaultColor in pairs(DEFAULT_COLORS) do
-			colors[colorName] = tableToColor3(config.colors[colorName], defaultColor)
+		local espColor = tableToColor3(config.colors.espColor, nil)
+			or tableToColor3(config.colors.espMarkerColor, nil)
+			or tableToColor3(config.colors.espLineColor, nil)
+		if espColor then
+			colors.espMarkerColor = espColor
+			colors.espLineColor = espColor
 		end
 	end
 	state.colors = colors
 end
 
 local function buildConfigTable()
-	local colors = {}
-	for name, color in pairs(state.colors) do
-		colors[name] = color3ToTable(color)
-	end
-
 	return {
 		savedPosition = state.savedPosition and cframeToTable(state.savedPosition) or nil,
 		savedBasePosition = state.savedBasePosition and vector3ToTable(state.savedBasePosition) or nil,
@@ -247,7 +248,9 @@ local function buildConfigTable()
 		menuPosition = udim2ToTable(ui.mainFrame and ui.mainFrame.Position or state.menuPosition),
 		openButtonPosition = udim2ToTable(ui.openButton and ui.openButton.Position or state.openButtonPosition),
 		settingsOpen = state.settingsOpen,
-		colors = colors,
+		colors = {
+			espColor = color3ToTable(state.colors.espMarkerColor),
+		},
 	}
 end
 
@@ -810,7 +813,7 @@ local function updateEspButtonVisual()
 end
 
 local function updateColorEditorVisuals(editor)
-	local color = state.colors[editor.colorKey]
+	local color = editor.colorKey == "espColor" and state.colors.espMarkerColor or state.colors[editor.colorKey]
 	editor.preview.BackgroundColor3 = color
 	editor.inputs[1].Text = tostring(math.floor(color.R * 255 + 0.5))
 	editor.inputs[2].Text = tostring(math.floor(color.G * 255 + 0.5))
@@ -886,7 +889,7 @@ local function updateMenuLayout()
 		return
 	end
 
-	local settingsHeight = state.settingsOpen and 380 or 0
+	local settingsHeight = state.settingsOpen and 170 or 0
 	ui.settingsContainer.Visible = state.settingsOpen
 	ui.settingsContainer.Size = UDim2.new(1, -20, 0, settingsHeight)
 	ui.mainFrame.Size = UDim2.new(0, 340, 0, 312 + settingsHeight)
@@ -910,7 +913,12 @@ local function parseChannelValue(text)
 end
 
 local function applyColorValue(colorKey, color)
-	state.colors[colorKey] = color
+	if colorKey == "espColor" then
+		state.colors.espMarkerColor = color
+		state.colors.espLineColor = color
+	else
+		state.colors[colorKey] = color
+	end
 	applyTheme()
 	setStatus(string.format("Updated %s", colorKey))
 end
@@ -956,7 +964,8 @@ local function createColorEditor(parent, colorKey, displayName)
 	titleLabel.TextColor3 = state.colors.textColor
 	titleLabel.Parent = container
 
-	local preview = createFrame("Preview", container, UDim2.new(0, 20, 0, 20), UDim2.new(1, -74, 0, 8), state.colors[colorKey])
+	local previewColor = colorKey == "espColor" and state.colors.espMarkerColor or state.colors[colorKey]
+	local preview = createFrame("Preview", container, UDim2.new(0, 20, 0, 20), UDim2.new(1, -74, 0, 8), previewColor)
 	addCorner(preview, UDim.new(0, 6))
 	createStroke(preview, Color3.fromRGB(15, 15, 15), 1)
 
@@ -1102,8 +1111,12 @@ local function buildInterface()
 	ui.setPositionButton = createButton("SetPositionButton", ui.mainFrame, UDim2.new(1, -20, 0, 40), UDim2.new(0, 10, 0, 95), "Set Position", state.colors.buttonBackground, state.colors.textColor)
 	registerDynamicButton(ui.setPositionButton, "primary")
 
-	ui.teleportButton = createButton("TeleportButton", ui.mainFrame, UDim2.new(1, -20, 0, 40), UDim2.new(0, 10, 0, 141), "TP to Position", state.colors.secondaryButtonBackground, state.colors.textColor)
+	ui.teleportButton = createButton("TeleportButton", ui.mainFrame, UDim2.new(0.72, -15, 0, 40), UDim2.new(0, 10, 0, 141), "TP to Position", state.colors.secondaryButtonBackground, state.colors.textColor)
 	registerDynamicButton(ui.teleportButton, "secondary")
+
+	ui.quickTeleportButton = createButton("QuickTeleportButton", ui.mainFrame, UDim2.new(0.28, -5, 0, 40), UDim2.new(0.72, 5, 0, 141), "TP", state.colors.secondaryButtonBackground, state.colors.textColor)
+	ui.quickTeleportButton.TextSize = 18
+	registerDynamicButton(ui.quickTeleportButton, "secondary")
 
 	ui.espButton = createButton("ESPButton", ui.mainFrame, UDim2.new(0.5, -15, 0, 40), UDim2.new(0, 10, 0, 187), "ESP: OFF", Color3.fromRGB(210, 75, 75), Color3.fromRGB(0, 0, 0))
 	registerDynamicButton(ui.espButton, "esp")
@@ -1149,16 +1162,7 @@ local function buildInterface()
 	ui.settingsLayout.Parent = ui.settingsScroll
 	ui.settingsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateSettingsCanvas)
 
-	createColorEditor(ui.settingsScroll, "frameBackground", "Menu Background")
-	createColorEditor(ui.settingsScroll, "titleBackground", "Title Background")
-	createColorEditor(ui.settingsScroll, "statusBackground", "Status Background")
-	createColorEditor(ui.settingsScroll, "buttonBackground", "Button Color")
-	createColorEditor(ui.settingsScroll, "secondaryButtonBackground", "Teleport Button")
-	createColorEditor(ui.settingsScroll, "openButtonBackground", "Open Button")
-	createColorEditor(ui.settingsScroll, "closeButtonBackground", "Close Button")
-	createColorEditor(ui.settingsScroll, "textColor", "Text Color")
-	createColorEditor(ui.settingsScroll, "espMarkerColor", "ESP Marker")
-	createColorEditor(ui.settingsScroll, "espLineColor", "ESP Line")
+	createColorEditor(ui.settingsScroll, "espColor", "ESP Color")
 
 	applyTheme()
 	updateEspButtonVisual()
@@ -1200,7 +1204,7 @@ local function connectEvents()
 		end
 	end)
 
-	ui.teleportButton.MouseButton1Click:Connect(function()
+	local function teleportToSavedPosition()
 		if not state.savedPosition then
 			setStatus("No position saved")
 			return
@@ -1214,7 +1218,10 @@ local function connectEvents()
 
 		humanoidRootPart.CFrame = state.savedPosition
 		setStatus("Teleported to saved position")
-	end)
+	end
+
+	ui.teleportButton.MouseButton1Click:Connect(teleportToSavedPosition)
+	ui.quickTeleportButton.MouseButton1Click:Connect(teleportToSavedPosition)
 
 	ui.espButton.MouseButton1Click:Connect(function()
 		state.espEnabled = not state.espEnabled
