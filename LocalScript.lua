@@ -51,7 +51,6 @@ local DEFAULT_CONFIG = {
 	colors = DEFAULT_COLORS,
 }
 
-local SCREEN_MARGIN = 12
 local DEFAULT_BASE_OFFSET = 3.5
 local ESP_MARKER_SIZE = Vector3.new(4, 8, 4)
 local ESP_MARKER_TRANSPARENCY = 0.55
@@ -324,11 +323,9 @@ local function getViewportSize()
 end
 
 local function clampAxis(value, objectSize, viewportSize)
-	local minPosition = SCREEN_MARGIN
-	local maxPosition = viewportSize - objectSize - SCREEN_MARGIN
-	if maxPosition < minPosition then
-		return math.floor((viewportSize - objectSize) * 0.5 + 0.5)
-	end
+	local visibleMargin = 24
+	local minPosition = -(objectSize - visibleMargin)
+	local maxPosition = viewportSize - visibleMargin
 	return math.clamp(value, minPosition, maxPosition)
 end
 
@@ -347,9 +344,11 @@ end
 local function reclampVisibleUi()
 	if ui.mainFrame then
 		ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, ui.mainFrame.Position)
+		state.menuPosition = ui.mainFrame.Position
 	end
 	if ui.openButton then
 		ui.openButton.Position = clampGuiPosition(ui.openButton, ui.openButton.Position)
+		state.openButtonPosition = ui.openButton.Position
 	end
 end
 
@@ -581,6 +580,10 @@ local function finishDrag()
 end
 
 local function beginDrag(input, target, onFinished)
+	if dragging and dragTarget == target and dragInputType == input.UserInputType then
+		return
+	end
+
 	dragging = true
 	dragInputType = input.UserInputType
 	dragStart = input.Position
@@ -610,7 +613,7 @@ UserInputService.InputChanged:Connect(function(input)
 				0,
 				startPosition.Y.Offset + delta.Y
 			)
-			dragTarget.Position = clampGuiPosition(dragTarget, desiredPosition)
+			dragTarget.Position = desiredPosition
 		end
 	end
 
@@ -888,6 +891,7 @@ local function updateMenuLayout()
 	ui.settingsContainer.Size = UDim2.new(1, -20, 0, settingsHeight)
 	ui.mainFrame.Size = UDim2.new(0, 340, 0, 312 + settingsHeight)
 	ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, ui.mainFrame.Position)
+	state.menuPosition = ui.mainFrame.Position
 	ui.settingsButton.Text = state.settingsOpen and "Settings ▲" or "Settings ▼"
 	updateSettingsCanvas()
 end
@@ -1161,6 +1165,8 @@ local function buildInterface()
 	setSettingsOpen(state.settingsOpen)
 	ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, state.menuPosition)
 	ui.openButton.Position = clampGuiPosition(ui.openButton, state.openButtonPosition)
+	state.menuPosition = ui.mainFrame.Position
+	state.openButtonPosition = ui.openButton.Position
 	bindViewportClamp()
 end
 
@@ -1240,12 +1246,14 @@ local function connectEvents()
 		ui.mainFrame.Visible = true
 		ui.openButton.Visible = false
 		ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, ui.mainFrame.Position)
+		state.menuPosition = ui.mainFrame.Position
 	end)
 
 	ui.closeButton.MouseButton1Click:Connect(function()
 		ui.mainFrame.Visible = false
 		ui.openButton.Visible = true
 		ui.openButton.Position = clampGuiPosition(ui.openButton, ui.openButton.Position)
+		state.openButtonPosition = ui.openButton.Position
 	end)
 
 	disconnectConnection(espObjects.characterConnection)
