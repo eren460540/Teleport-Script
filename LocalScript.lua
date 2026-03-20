@@ -43,6 +43,7 @@ local DEFAULT_COLORS = {
 
 local DEFAULT_CONFIG = {
 	savedPosition = nil,
+	savedBasePosition = nil,
 	espEnabled = false,
 	menuPosition = { scaleX = 0, offsetX = 120, scaleY = 0, offsetY = 120 },
 	openButtonPosition = { scaleX = 0, offsetX = 20, scaleY = 0, offsetY = 20 },
@@ -50,8 +51,14 @@ local DEFAULT_CONFIG = {
 	colors = DEFAULT_COLORS,
 }
 
+local SCREEN_MARGIN = 12
+local DEFAULT_BASE_OFFSET = 3.5
+local ESP_MARKER_SIZE = Vector3.new(4, 8, 4)
+local ESP_MARKER_TRANSPARENCY = 0.55
+
 local state = {
 	savedPosition = nil,
+	savedBasePosition = nil,
 	espEnabled = false,
 	settingsOpen = false,
 	colors = {},
@@ -82,6 +89,8 @@ local espObjects = {
 	beam = nil,
 	renderConnection = nil,
 	characterConnection = nil,
+	viewportConnection = nil,
+	cameraConnection = nil,
 }
 
 local CONFIG_SCOPE = tostring(game.PlaceId ~= 0 and game.PlaceId or game.GameId)
@@ -135,6 +144,29 @@ local function tableToCFrame(data)
 	return CFrame.new(table.unpack(data))
 end
 
+local function vector3ToTable(vector)
+	return {
+		x = vector.X,
+		y = vector.Y,
+		z = vector.Z,
+	}
+end
+
+local function tableToVector3(data)
+	if type(data) ~= "table" then
+		return nil
+	end
+
+	local x = tonumber(data.x)
+	local y = tonumber(data.y)
+	local z = tonumber(data.z)
+	if not x or not y or not z then
+		return nil
+	end
+
+	return Vector3.new(x, y, z)
+end
+
 local function udim2ToTable(udim)
 	return {
 		scaleX = udim.X.Scale,
@@ -168,9 +200,27 @@ local function cloneDefaultColors()
 	return output
 end
 
+local function estimateBasePositionFromCFrame(cframe)
+	if not cframe then
+		return nil
+	end
+
+	local character = localPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoidRootPart then
+		local offset = humanoidRootPart.Size.Y * 0.5 + humanoid.HipHeight
+		return cframe.Position - Vector3.new(0, offset, 0)
+	end
+
+	return cframe.Position - Vector3.new(0, DEFAULT_BASE_OFFSET, 0)
+end
+
 local function applyLoadedConfig(config)
 	config = config or {}
 	state.savedPosition = tableToCFrame(config.savedPosition)
+	state.savedBasePosition = tableToVector3(config.savedBasePosition)
+		or estimateBasePositionFromCFrame(state.savedPosition)
 	state.espEnabled = config.espEnabled == true
 	state.menuPosition = tableToUDim2(config.menuPosition, state.menuPosition)
 	state.openButtonPosition = tableToUDim2(config.openButtonPosition, state.openButtonPosition)
@@ -193,6 +243,7 @@ local function buildConfigTable()
 
 	return {
 		savedPosition = state.savedPosition and cframeToTable(state.savedPosition) or nil,
+		savedBasePosition = state.savedBasePosition and vector3ToTable(state.savedBasePosition) or nil,
 		espEnabled = state.espEnabled,
 		menuPosition = udim2ToTable(ui.mainFrame and ui.mainFrame.Position or state.menuPosition),
 		openButtonPosition = udim2ToTable(ui.openButton and ui.openButton.Position or state.openButtonPosition),
@@ -272,16 +323,62 @@ local function getViewportSize()
 	return Vector2.new(1920, 1080)
 end
 
+local function clampAxis(value, objectSize, viewportSize)
+	local minPosition = SCREEN_MARGIN
+	local maxPosition = viewportSize - objectSize - SCREEN_MARGIN
+	if maxPosition < minPosition then
+		return math.floor((viewportSize - objectSize) * 0.5 + 0.5)
+	end
+	return math.clamp(value, minPosition, maxPosition)
+end
+
 local function clampGuiPosition(guiObject, desiredPosition)
 	local viewportSize = getViewportSize()
 	local absoluteSize = guiObject.AbsoluteSize
 	local absX = desiredPosition.X.Scale * viewportSize.X + desiredPosition.X.Offset
 	local absY = desiredPosition.Y.Scale * viewportSize.Y + desiredPosition.Y.Offset
-	local maxX = math.max(0, viewportSize.X - absoluteSize.X)
-	local maxY = math.max(0, viewportSize.Y - absoluteSize.Y)
-	absX = math.clamp(absX, 0, maxX)
-	absY = math.clamp(absY, 0, maxY)
-	return UDim2.new(0, absX, 0, absY)
+
+	absX = clampAxis(absX, absoluteSize.X, viewportSize.X)
+	absY = clampAxis(absY, absoluteSize.Y, viewportSize.Y)
+
+	return UDim2.new(0, math.floor(absX + 0.5), 0, math.floor(absY + 0.5))
+end
+
+local function reclampVisibleUi()
+	if ui.mainFrame then
+		ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, ui.mainFrame.Position)
+	end
+	if ui.openButton then
+		ui.openButton.Position = clampGuiPosition(ui.openButton, ui.openButton.Position)
+	end
+end
+
+local function bindViewportClamp()
+	if espObjects.viewportConnection then
+		espObjects.viewportConnection:Disconnect()
+		espObjects.viewportConnection = nil
+	end
+	if espObjects.cameraConnection then
+		espObjects.cameraConnection:Disconnect()
+		espObjects.cameraConnection = nil
+	end
+
+	local function connectCamera(camera)
+		if espObjects.viewportConnection then
+			espObjects.viewportConnection:Disconnect()
+			espObjects.viewportConnection = nil
+		end
+
+		if camera then
+			espObjects.viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(reclampVisibleUi)
+		end
+	end
+
+	connectCamera(Workspace.CurrentCamera)
+	espObjects.cameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		connectCamera(Workspace.CurrentCamera)
+		reclampVisibleUi()
+	end)
 end
 
 local function getCharacter()
@@ -311,6 +408,29 @@ local function getHumanoidRootPart(timeout)
 	return nil
 end
 
+local function getHumanoid(timeout)
+	local character = getCharacter()
+	if not character then
+		return nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		return humanoid
+	end
+
+	if timeout and timeout > 0 then
+		local success, result = pcall(function()
+			return character:WaitForChild("Humanoid", timeout)
+		end)
+		if success then
+			return result
+		end
+	end
+
+	return nil
+end
+
 local function getReadableTextColor(backgroundColor)
 	local brightness = (backgroundColor.R * 0.299) + (backgroundColor.G * 0.587) + (backgroundColor.B * 0.114)
 	return brightness > 0.6 and Color3.fromRGB(18, 18, 18) or Color3.fromRGB(255, 255, 255)
@@ -330,6 +450,31 @@ local function createStroke(instance, color, thickness)
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = instance
 	return stroke
+end
+
+local function getSavedBasePosition()
+	return state.savedBasePosition or estimateBasePositionFromCFrame(state.savedPosition)
+end
+
+local function computeFootBasePosition(humanoidRootPart, humanoid)
+	local verticalOffset = humanoidRootPart.Size.Y * 0.5 + math.max(humanoid.HipHeight, 0)
+	local estimatedBase = humanoidRootPart.Position - Vector3.new(0, verticalOffset, 0)
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = { getCharacter() }
+	raycastParams.IgnoreWater = false
+
+	local rayDistance = math.max(verticalOffset + 4, 8)
+	local raycastResult = Workspace:Raycast(humanoidRootPart.Position, Vector3.new(0, -rayDistance, 0), raycastParams)
+	if raycastResult then
+		local groundPosition = raycastResult.Position
+		if groundPosition.Y <= humanoidRootPart.Position.Y + 0.5 then
+			return Vector3.new(humanoidRootPart.Position.X, groundPosition.Y, humanoidRootPart.Position.Z)
+		end
+	end
+
+	return estimatedBase
 end
 
 --==================================================
@@ -408,60 +553,65 @@ end
 -- Drag logic
 --==================================================
 local dragging = false
-local dragInput = nil
+local dragInputType = nil
 local dragStart = nil
 local startPosition = nil
 local dragTarget = nil
 local dragFinishedCallback = nil
 
+local function finishDrag()
+	if not dragTarget then
+		dragging = false
+		dragInputType = nil
+		dragFinishedCallback = nil
+		return
+	end
+
+	dragTarget.Position = clampGuiPosition(dragTarget, dragTarget.Position)
+	if dragFinishedCallback then
+		dragFinishedCallback(dragTarget.Position)
+	end
+
+	dragging = false
+	dragInputType = nil
+	dragStart = nil
+	startPosition = nil
+	dragTarget = nil
+	dragFinishedCallback = nil
+end
+
 local function beginDrag(input, target, onFinished)
 	dragging = true
-	dragInput = input
+	dragInputType = input.UserInputType
 	dragStart = input.Position
 	startPosition = target.Position
 	dragTarget = target
 	dragFinishedCallback = onFinished
-
-	input.Changed:Connect(function()
-		if input.UserInputState == Enum.UserInputState.End then
-			dragging = false
-			dragInput = nil
-			if dragTarget then
-				dragTarget.Position = clampGuiPosition(dragTarget, dragTarget.Position)
-				if dragFinishedCallback then
-					dragFinishedCallback(dragTarget.Position)
-				end
-			end
-			dragTarget = nil
-			dragFinishedCallback = nil
-		end
-	end)
 end
 
 local function makeDraggable(handle, target, onFinished)
+	handle.Active = true
 	handle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			beginDrag(input, target, onFinished)
 		end
 	end)
-
-	handle.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-			dragInput = input
-		end
-	end)
 end
 
 UserInputService.InputChanged:Connect(function(input)
-	if dragging and dragTarget and input == dragInput then
-		local delta = input.Position - dragStart
-		local desiredPosition = UDim2.new(
-			startPosition.X.Scale,
-			startPosition.X.Offset + delta.X,
-			startPosition.Y.Scale,
-			startPosition.Y.Offset + delta.Y
-		)
-		dragTarget.Position = clampGuiPosition(dragTarget, desiredPosition)
+	if dragging and dragTarget then
+		local isMouseDrag = dragInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement
+		local isTouchDrag = dragInputType == Enum.UserInputType.Touch and input.UserInputType == Enum.UserInputType.Touch
+		if isMouseDrag or isTouchDrag then
+			local delta = input.Position - dragStart
+			local desiredPosition = UDim2.new(
+				0,
+				startPosition.X.Offset + delta.X,
+				0,
+				startPosition.Y.Offset + delta.Y
+			)
+			dragTarget.Position = clampGuiPosition(dragTarget, desiredPosition)
+		end
 	end
 
 	if activeColorSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
@@ -472,6 +622,14 @@ end)
 UserInputService.InputEnded:Connect(function(input)
 	if activeColorSlider and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 		activeColorSlider = nil
+	end
+
+	if dragging then
+		local isMouseRelease = dragInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1
+		local isTouchRelease = dragInputType == Enum.UserInputType.Touch and input.UserInputType == Enum.UserInputType.Touch
+		if isMouseRelease or isTouchRelease then
+			finishDrag()
+		end
 	end
 end)
 
@@ -525,9 +683,9 @@ local function createEspObjects()
 	marker.CanCollide = false
 	marker.CanTouch = false
 	marker.CanQuery = false
-	marker.Transparency = 0.55
+	marker.Transparency = ESP_MARKER_TRANSPARENCY
 	marker.Material = Enum.Material.ForceField
-	marker.Size = Vector3.new(4, 6, 4)
+	marker.Size = ESP_MARKER_SIZE
 	marker.Color = state.colors.espMarkerColor
 	marker.Parent = folder
 
@@ -587,9 +745,13 @@ local function updateEspVisuals()
 		return
 	end
 
-	local savedPosition = state.savedPosition.Position
-	espObjects.marker.CFrame = CFrame.new(savedPosition + Vector3.new(0, 3.2, 0))
-	espObjects.linePart.CFrame = CFrame.new(savedPosition + Vector3.new(0, 2.5, 0))
+	local savedBasePosition = getSavedBasePosition()
+	if not savedBasePosition then
+		return
+	end
+
+	espObjects.marker.CFrame = CFrame.new(savedBasePosition + Vector3.new(0, espObjects.marker.Size.Y * 0.5, 0))
+	espObjects.linePart.CFrame = CFrame.new(savedBasePosition)
 	espObjects.marker.Color = state.colors.espMarkerColor
 
 	if espObjects.beam then
@@ -900,9 +1062,11 @@ local function buildInterface()
 	ui.screenGui.Parent = playerGui
 
 	ui.openButton = createButton("OpenButton", ui.screenGui, UDim2.new(0, 140, 0, 44), state.openButtonPosition, "Open Menu", state.colors.openButtonBackground, state.colors.textColor)
+	ui.openButton.Active = true
 	registerDynamicButton(ui.openButton, "open")
 
 	ui.mainFrame = createFrame("MainFrame", ui.screenGui, UDim2.new(0, 340, 0, 312), state.menuPosition, state.colors.frameBackground)
+	ui.mainFrame.Active = true
 	addCorner(ui.mainFrame, UDim.new(0, 10))
 	createStroke(ui.mainFrame, Color3.fromRGB(55, 55, 55), 1)
 
@@ -997,12 +1161,16 @@ local function buildInterface()
 	setSettingsOpen(state.settingsOpen)
 	ui.mainFrame.Position = clampGuiPosition(ui.mainFrame, state.menuPosition)
 	ui.openButton.Position = clampGuiPosition(ui.openButton, state.openButtonPosition)
+	bindViewportClamp()
 end
 
 --==================================================
 -- Button events
 --==================================================
 local function connectEvents()
+	makeDraggable(ui.mainFrame, ui.mainFrame, function(newPosition)
+		state.menuPosition = newPosition
+	end)
 	makeDraggable(ui.titleBar, ui.mainFrame, function(newPosition)
 		state.menuPosition = newPosition
 	end)
@@ -1012,12 +1180,14 @@ local function connectEvents()
 
 	ui.setPositionButton.MouseButton1Click:Connect(function()
 		local humanoidRootPart = getHumanoidRootPart(1)
-		if not humanoidRootPart then
+		local humanoid = getHumanoid(1)
+		if not humanoidRootPart or not humanoid then
 			setStatus("Character not ready")
 			return
 		end
 
 		state.savedPosition = humanoidRootPart.CFrame
+		state.savedBasePosition = computeFootBasePosition(humanoidRootPart, humanoid)
 		setStatus("Position saved")
 		if state.espEnabled then
 			refreshEspState()
