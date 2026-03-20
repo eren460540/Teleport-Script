@@ -44,8 +44,8 @@ local DEFAULT_COLORS = {
 local DEFAULT_CONFIG = {
 	savedPosition = nil,
 	espEnabled = false,
-	menuPosition = { scaleX = 0.5, offsetX = -160, scaleY = 0.5, offsetY = -140 },
-	openButtonPosition = { scaleX = 0, offsetX = 20, scaleY = 0.5, offsetY = -22 },
+	menuPosition = { scaleX = 0, offsetX = 120, scaleY = 0, offsetY = 120 },
+	openButtonPosition = { scaleX = 0, offsetX = 20, scaleY = 0, offsetY = 20 },
 	settingsOpen = false,
 	colors = DEFAULT_COLORS,
 }
@@ -275,9 +275,13 @@ end
 local function clampGuiPosition(guiObject, desiredPosition)
 	local viewportSize = getViewportSize()
 	local absoluteSize = guiObject.AbsoluteSize
-	local xOffset = math.clamp(desiredPosition.X.Offset, -absoluteSize.X + 48, viewportSize.X - 48)
-	local yOffset = math.clamp(desiredPosition.Y.Offset, 0, viewportSize.Y - 36)
-	return UDim2.new(desiredPosition.X.Scale, xOffset, desiredPosition.Y.Scale, yOffset)
+	local absX = desiredPosition.X.Scale * viewportSize.X + desiredPosition.X.Offset
+	local absY = desiredPosition.Y.Scale * viewportSize.Y + desiredPosition.Y.Offset
+	local maxX = math.max(0, viewportSize.X - absoluteSize.X)
+	local maxY = math.max(0, viewportSize.Y - absoluteSize.Y)
+	absX = math.clamp(absX, 0, maxX)
+	absY = math.clamp(absY, 0, maxY)
+	return UDim2.new(0, absX, 0, absY)
 end
 
 local function getCharacter()
@@ -891,6 +895,7 @@ local function buildInterface()
 	ui.screenGui = Instance.new("ScreenGui")
 	ui.screenGui.Name = "TeleportMenu"
 	ui.screenGui.ResetOnSpawn = false
+	ui.screenGui.IgnoreGuiInset = true
 	ui.screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	ui.screenGui.Parent = playerGui
 
